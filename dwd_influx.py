@@ -559,8 +559,8 @@ def main():
     parser = argparse.ArgumentParser(description="DWD InfluxDB Loader")
     parser.add_argument(
         "mode",
-        choices=["init", "tracking"],
-        help="Run mode: init (one-time) or tracking (repeated).",
+        choices=["init", "tracking", "historical"],
+        help="Run mode: init (one-time - fetching 'recent' data), tracking (repeated - fetching 'now' data ) or historical (fetching historical data)",
     )
     parser.add_argument(
         "--config", default="config.yaml", help="Path to YAML config file."
@@ -616,25 +616,7 @@ def main():
                 "temperature",
                 station_map=station_map,
             )
-            logger.info("Fetching historical 10-minute data for precipitation")
-            fetch_historical_10min_data(
-                client,
-                influx_bucket,
-                influx_org,
-                station_ids,
-                "precipitation",
-                station_map=station_map,
-            )
-            logger.info("Fetching historical 10-minute data for temperature")
-            fetch_historical_10min_data(
-                client,
-                influx_bucket,
-                influx_org,
-                station_ids,
-                "temperature",
-                station_map=station_map,
-            )
-        elif args.mode == "tracking":
+
             logger.info("Fetching recent 10-minute data for precipitation")
             fetch_recent_or_now_10min_data(
                 client,
@@ -655,6 +637,26 @@ def main():
                 period="recent",
                 station_map=station_map,
             )
+        elif args.mode == "historical":
+            logger.info("Fetching historical 10-minute data for precipitation")
+            fetch_historical_10min_data(
+                client,
+                influx_bucket,
+                influx_org,
+                station_ids,
+                "precipitation",
+                station_map=station_map,
+            )
+            logger.info("Fetching historical 10-minute data for temperature")
+            fetch_historical_10min_data(
+                client,
+                influx_bucket,
+                influx_org,
+                station_ids,
+                "temperature",
+                station_map=station_map,
+            )
+        elif args.mode == "tracking":
             logger.info("Fetching now data for precipitation")
             fetch_recent_or_now_10min_data(
                 client,
