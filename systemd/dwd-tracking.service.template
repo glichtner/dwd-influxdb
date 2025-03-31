@@ -1,0 +1,8 @@
+[Unit]
+Description=Track recent weather data from DWD and write to InfluxDB
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKDIR}}
+ExecStart={{PYTHON}} {{WORKDIR}}/dwd_influx.py tracking --config {{WORKDIR}}/config.yaml

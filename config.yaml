@@ -1,0 +1,13 @@
+influxdb:
+  url: "http://localhost:8086"
+  token: "my-secret-token"
+  org: "my-org"
+  bucket: "dwd"
+
+stations:
+  - id: "00427"
+    name: "Schöneberg"
+  - id: "00403"
+    name: "Dahlem"
+  - id: "00433"
+    name: "Tempelhof"
