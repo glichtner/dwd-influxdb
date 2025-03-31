@@ -272,6 +272,7 @@ def parse_10min_temp(csv_content: str):
             )
         except (IndexError, ValueError):
             continue
+
     return out
 
 
@@ -289,7 +290,7 @@ def write_points_to_influx(
         measurement,
     )
 
-    write_api = client.write_api(write_options=None)
+    write_api = client.write_api()
     points = []
 
     for entry in data_list:
@@ -391,53 +392,101 @@ def fetch_and_write_zip(
 
 
 def fetch_multi_annual_means(
-    influx_client, bucket, org, data_type="precipitation", station_map=None
+    influx_client,
+    bucket,
+    org,
+    data_type="precipitation",
+    station_map=None,
+    station_ids=None,
 ):
     """
     Download multi-annual mean data from the relevant URLs,
-    parse, and write them to Influx.
+    parse, and write them to Influx, *one data point per station-month*.
+    Only writes data for stations in `station_ids`.
     """
+    # We'll store each month as a separate data point in the measurement:
+    #   "multi_annual_precipitation" or "multi_annual_temperature".
+    # That way you can easily plot, e.g. monthly precipitation references or do ratios.
+
+    measurement_name = "multi_annual_" + data_type
 
     for period in PERIOD_STRINGS:
-
-        # Construct the URL
         short_period = "-".join([year[2:] for year in period.split("-")])
         url = MULTI_ANNUAL_TEMPLATES[data_type].format(
             short_period=short_period, period=period
         )
 
+        logger.info("Fetching multi-annual means from URL: %s", url)
         content_bytes = download_file(url)
         content_str = content_bytes.decode("utf-8", errors="ignore")
-        parsed = parse_multi_annual_means(content_str)
 
-        data_list = []
-        for row in parsed:
-            ref_period = row.pop("reference_period", None)
-            station_id = row.pop("station_id", None)
+        # Parse the entire file
+        rows = parse_multi_annual_means(content_str)
 
-            synthetic_time = None
-            if ref_period and "-" in ref_period:
-                try:
-                    start_year = int(ref_period.split("-")[0])
-                    synthetic_time = datetime(start_year, 1, 1)
-                except ValueError | TypeError:
-                    logger.warning(
-                        "Invalid reference period format: %s; skipping", ref_period
-                    )
-                    synthetic_time = None
+        # We'll collect data points to write to Influx in one batch
+        data_points = []
 
-            new_dict = {
-                "station_id": station_id,
-                "time": synthetic_time,
-                "reference_period": ref_period,
+        for row in rows:
+            station_id = row["station_id"]
+
+            # Only proceed if this station is in our config
+            if station_ids and station_id not in station_ids:
+                continue
+
+            ref_period = row["reference_period"]  # e.g. "1961-1990"
+
+            # We have row["Jan"], row["Feb"], ...
+            # Let's map month names to numeric offsets
+            month_values = {
+                1: row["Jan"],
+                2: row["Feb"],
+                3: row["Mar"],
+                4: row["Apr"],
+                5: row["May"],
+                6: row["Jun"],
+                7: row["Jul"],
+                8: row["Aug"],
+                9: row["Sep"],
+                10: row["Oct"],
+                11: row["Nov"],
+                12: row["Dec"],
             }
-            # The rest (Jan..Year) remain:
-            new_dict.update(row)
-            data_list.append(new_dict)
 
-        measurement_name = "multi_annual_" + data_type
+            # We'll pick a reference year from the period (e.g. the start year)
+            try:
+                start_year = int(ref_period.split("-")[0])  # e.g. 1961
+            except ValueError | TypeError:
+                logger.warning(
+                    "Skipping row with invalid reference period: %s", ref_period
+                )
+                continue
+
+            # For each month, create a separate point
+            for month_num, val in month_values.items():
+                # Synthetic time: first day of that month in the start year
+                # e.g. 1961-01-01 for January
+                # or you might prefer storing all months as day=1, year=1971, etc.
+                # The important part is that each month is a separate time value
+                synthetic_ts = datetime(start_year, month_num, 1)
+
+                # Create a single data record to transform into an Influx point
+                point_dict = {
+                    "station_id": station_id,
+                    "time": synthetic_ts,
+                    "reference_period": ref_period,
+                    "value": val,  # The monthly mean precipitation/temperature
+                }
+                data_points.append(point_dict)
+
+        # Write all data points for that reference period (and data_type)
         write_points_to_influx(
-            influx_client, bucket, org, data_list, measurement_name, station_map
+            influx_client, bucket, org, data_points, measurement_name, station_map
+        )
+        logger.info(
+            "Wrote %d monthly means for reference period %s (%s)",
+            len(data_points),
+            period,
+            data_type,
         )
 
 
