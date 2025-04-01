@@ -3,7 +3,7 @@ import argparse
 import csv
 import logging
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO, TextIOWrapper
 
 import requests
@@ -138,7 +138,7 @@ def parse_multi_annual_means(content: str):
         # 2: Datenquelle
         # 3..15: Jan..Dez, and 16: Jahr
         try:
-            station_id = parts[0]
+            station_id = parts[0].zfill(5)
             ref_period = parts[1]
             jan_val = float(parts[3].replace(",", "."))
             feb_val = float(parts[4].replace(",", "."))
@@ -202,7 +202,7 @@ def parse_10min_precip(csv_content: str):
         if not row or row[0].startswith("STATIONS_ID"):
             continue
         try:
-            station_id = row[0].strip()
+            station_id = row[0].strip().zfill(5)
             mess_datum = row[1].strip()  # e.g. "202001010000"
             rws_10 = row[4].strip()
 
@@ -249,7 +249,7 @@ def parse_10min_temp(csv_content: str):
         if not row or row[0].startswith("STATIONS_ID"):
             continue
         try:
-            station_id = row[0].strip()
+            station_id = row[0].strip().zfill(5)
             mess_datum = row[1].strip()  # e.g. "202001010000"
             tt_10 = row[4].strip()
             rf_10 = row[6].strip()
@@ -290,31 +290,41 @@ def write_points_to_influx(
         measurement,
     )
 
-    write_api = client.write_api()
-    points = []
+    with client.write_api() as write_api:
+        points = []
 
-    for entry in data_list:
-        station_id = entry.pop("station_id", None)
-        tstamp = entry.pop("time", None)
+        for entry in data_list:
+            station_id = entry.pop("station_id", None)
+            tstamp = entry.pop("time", None)
+            ref_period = entry.pop("reference_period", None)
 
-        p = Point(measurement)
-        if station_id:
-            p = p.tag("station_id", station_id)
-            if station_map and station_id in station_map and station_map[station_id]:
-                p = p.tag("station_name", station_map[station_id])
-        if tstamp:
-            p = p.time(tstamp, WritePrecision.S)
+            p = Point(measurement)
+            if station_id:
+                p = p.tag("station_id", station_id)
+                if (
+                    station_map
+                    and station_id in station_map
+                    and station_map[station_id]
+                ):
+                    p = p.tag("station_name", station_map[station_id])
+            if tstamp:
+                if tstamp.tzinfo is None:
+                    tstamp = tstamp.replace(tzinfo=timezone.utc)
+                p = p.time(tstamp, WritePrecision.S)
+            if ref_period:
+                p = p.tag("reference_period", ref_period)
 
-        # The rest of the keys become fields
-        for k, v in entry.items():
-            p = p.field(k, v)
-        points.append(p)
+            # The rest of the keys become fields
+            for k, v in entry.items():
+                p = p.field(k, v)
 
-    if points:
-        write_api.write(bucket=bucket, org=org, record=points)
-        logger.info("Successfully written %d points", len(points))
-    else:
-        logger.info("No points to write for measurement '%s'", measurement)
+            points.append(p)
+
+        if points:
+            write_api.write(bucket=bucket, org=org, record=points)
+            logger.info("Successfully written %d points", len(points))
+        else:
+            logger.info("No points to write for measurement '%s'", measurement)
 
 
 ###############################################################################
@@ -427,7 +437,7 @@ def fetch_multi_annual_means(
         data_points = []
 
         for row in rows:
-            station_id = row["station_id"]
+            station_id = row["station_id"].zfill(5)
 
             # Only proceed if this station is in our config
             if station_ids and station_id not in station_ids:
@@ -584,7 +594,7 @@ def main():
     if isinstance(stations_config, list):
         if all(isinstance(item, dict) for item in stations_config):
             for item in stations_config:
-                station_id = item.get("id")
+                station_id = item.get("id").zfill(5)
                 station_ids.append(station_id)
                 station_map[station_id] = item.get("name", "")
         else:
@@ -608,6 +618,7 @@ def main():
                 influx_org,
                 "precipitation",
                 station_map=station_map,
+                station_ids=station_ids,
             )
             fetch_multi_annual_means(
                 client,
@@ -615,6 +626,7 @@ def main():
                 influx_org,
                 "temperature",
                 station_map=station_map,
+                station_ids=station_ids,
             )
 
             logger.info("Fetching recent 10-minute data for precipitation")
